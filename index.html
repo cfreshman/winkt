@@ -1,0 +1,476 @@
+<!-- 
+winkt - A simple WKT geometry viewer
+MIT License - https://opensource.org/licenses/MIT 
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>winkt</title>
+    <script src="https://unpkg.com/jsts@2.9.3/dist/jsts.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 10px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .header {
+            margin-bottom: 10px;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 1.5em;
+        }
+        .input-area {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        #wktInput {
+            width: 100%;
+            height: 80px;
+            padding: 8px;
+            font-family: monospace;
+            font-size: 14px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            resize: vertical;
+            box-sizing: border-box;
+        }
+        .render-button-container {
+            display: flex;
+            justify-content: flex-end;
+        }
+        button {
+            padding: 8px 16px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button.render-button {
+            width: 100%;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        .viewer {
+            background-color: white;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 8px;
+        }
+        #svgContainer {
+            width: 100%;
+            height: 60vh;
+            min-height: 300px;
+            border: 1px solid #ddd;
+            background-color: #fff;
+        }
+        .error {
+            color: #dc3545;
+            margin-top: 8px;
+            display: none;
+            font-size: 14px;
+        }
+        .controls {
+            margin-top: 8px;
+            display: flex;
+            justify-content: flex-end;
+        }
+        @media (max-width: 480px) {
+            body {
+                padding: 5px;
+            }
+            .header h1 {
+                font-size: 1.2em;
+            }
+            #wktInput {
+                font-size: 12px;
+            }
+            button {
+                padding: 6px 12px;
+                font-size: 14px;
+            }
+            .viewer {
+                padding: 5px;
+            }
+            #svgContainer {
+                min-height: 250px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>WKT Viewer</h1>
+        </div>
+        
+        <div class="input-area">
+            <textarea id="wktInput" placeholder="Enter WKT (one per line):&#10;POINT(30 10)&#10;POLYGON((30 10, 40 40, 20 40, 10 20, 30 10))"></textarea>
+            <div class="render-button-container">
+                <button class="render-button" onclick="renderWKT()">Render</button>
+            </div>
+        </div>
+        
+        <div id="error" class="error"></div>
+        
+        <div class="viewer">
+            <svg id="svgContainer" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet">
+                <g id="geometryGroup" transform="translate(0,0) scale(1)"></g>
+            </svg>
+            <div class="controls">
+                <button onclick="resetView()">Reset View</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let scale = 1;
+        let translateX = 0;
+        let translateY = 0;
+        let isDragging = false;
+        let lastX = 0;
+        let lastY = 0;
+        
+        // Initialize pan and zoom handlers
+        const svgContainer = document.getElementById('svgContainer');
+        
+        function handleMouseMove(e) {
+            if (!isDragging) return;
+            
+            // Get points in SVG coordinates
+            const pt = svgContainer.createSVGPoint();
+            pt.x = e.clientX;
+            pt.y = e.clientY;
+            const svgP = pt.matrixTransform(svgContainer.getScreenCTM().inverse());
+            
+            pt.x = lastX;
+            pt.y = lastY;
+            const lastSvgP = pt.matrixTransform(svgContainer.getScreenCTM().inverse());
+            
+            translateX += svgP.x - lastSvgP.x;
+            translateY += svgP.y - lastSvgP.y;
+            
+            lastX = e.clientX;
+            lastY = e.clientY;
+            
+            updateTransform();
+        }
+        
+        function handleMouseUp(e) {
+            if (!isDragging) return;
+            isDragging = false;
+            svgContainer.style.cursor = 'grab';
+            document.body.style.cursor = 'default';
+            
+            window.removeEventListener('mousemove', handleMouseMove);
+            window.removeEventListener('mouseup', handleMouseUp);
+        }
+        
+        svgContainer.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const delta = e.deltaY;
+            
+            // Get point in SVG coordinates
+            const pt = svgContainer.createSVGPoint();
+            pt.x = e.clientX;
+            pt.y = e.clientY;
+            const svgP = pt.matrixTransform(svgContainer.getScreenCTM().inverse());
+            
+            const oldScale = scale;
+            // Scale around mouse position
+            if (delta > 0) {
+                scale /= 1.1;
+            } else {
+                scale *= 1.1;
+            }
+            
+            // Adjust translation to keep the point under mouse fixed
+            translateX += (svgP.x - translateX) * (1 - scale/oldScale);
+            translateY += (svgP.y - translateY) * (1 - scale/oldScale);
+            
+            updateTransform();
+        });
+        
+        svgContainer.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            lastX = e.clientX;
+            lastY = e.clientY;
+            svgContainer.style.cursor = 'grabbing';
+            document.body.style.cursor = 'grabbing';
+            
+            window.addEventListener('mousemove', handleMouseMove);
+            window.addEventListener('mouseup', handleMouseUp);
+        });
+        
+        // Set initial cursor style
+        svgContainer.style.cursor = 'grab';
+        
+        function renderWKT() {
+            const wktInput = document.getElementById('wktInput').value;
+            const errorDiv = document.getElementById('error');
+            const geometryGroup = document.getElementById('geometryGroup');
+            
+            // Clear previous geometry and errors
+            geometryGroup.innerHTML = '';
+            errorDiv.style.display = 'none';
+            
+            try {
+                const reader = new jsts.io.WKTReader();
+                const wktStrings = wktInput.split('\n').filter(s => s.trim());
+                
+                // Process all WKT strings and collect their bounds
+                const allGeometries = wktStrings.map(wkt => {
+                    const geometry = reader.read(wkt.trim());
+                    const coordinates = extractCoordinates(geometry);
+                    return { geometry, coordinates, type: geometry.getGeometryType() };
+                });
+
+                // Calculate combined bounds
+                const allCoordinates = allGeometries.map(g => g.coordinates).flat(1);
+                const bounds = calculateBounds(allCoordinates);
+
+                // Render all geometries
+                const paths = allGeometries.map(({ coordinates, type }) => 
+                    createSVGPath(coordinates, bounds, type)
+                );
+
+                // Add all paths with their styles
+                geometryGroup.innerHTML = allGeometries.map(({ type }, index) => `
+                    <path d="${paths[index]}" ${getGeometryStyle(type)}/>
+                `).join('');
+                
+                // Center all geometries
+                centerGeometry(bounds);
+            } catch (error) {
+                errorDiv.textContent = `Error: ${error.message}`;
+                errorDiv.style.display = 'block';
+            }
+        }
+        
+        function extractCoordinates(geometry) {
+            const type = geometry.getGeometryType();
+            
+            switch (type) {
+                case 'Point':
+                    const coord = geometry.getCoordinate();
+                    return [[coord.x, coord.y]];
+                case 'LineString':
+                case 'LinearRing':
+                    // Return array of coordinates directly, but wrapped in an outer array
+                    // to maintain consistent nesting with other geometry types
+                    return [geometry.getCoordinates().map(coord => [coord.x, coord.y])];
+                case 'Polygon':
+                    // Handle both exterior and interior rings
+                    const rings = [];
+                    rings.push(geometry.getExteriorRing().getCoordinates().map(coord => [coord.x, coord.y]));
+                    for (let i = 0; i < geometry.getNumInteriorRing(); i++) {
+                        rings.push(geometry.getInteriorRingN(i).getCoordinates().map(coord => [coord.x, coord.y]));
+                    }
+                    return rings;
+                case 'MultiPoint':
+                    // Return array of points
+                    return [Array.from({ length: geometry.getNumGeometries() }, (_, i) => {
+                        const point = geometry.getGeometryN(i);
+                        const c = point.getCoordinate();
+                        return [c.x, c.y];
+                    })];
+                case 'MultiLineString':
+                    // Return array of linestrings
+                    return Array.from({ length: geometry.getNumGeometries() }, (_, i) => {
+                        const line = geometry.getGeometryN(i);
+                        return line.getCoordinates().map(coord => [coord.x, coord.y]);
+                    });
+                case 'MultiPolygon':
+                    // Return array of polygons
+                    return Array.from({ length: geometry.getNumGeometries() }, (_, i) => {
+                        const poly = geometry.getGeometryN(i);
+                        const rings = [];
+                        rings.push(poly.getExteriorRing().getCoordinates().map(coord => [coord.x, coord.y]));
+                        for (let j = 0; j < poly.getNumInteriorRing(); j++) {
+                            rings.push(poly.getInteriorRingN(j).getCoordinates().map(coord => [coord.x, coord.y]));
+                        }
+                        return rings;
+                    });
+                case 'GeometryCollection':
+                    // Handle each geometry in the collection
+                    const coords = [];
+                    for (let i = 0; i < geometry.getNumGeometries(); i++) {
+                        coords.push(extractCoordinates(geometry.getGeometryN(i)));
+                    }
+                    return coords;
+                default:
+                    return [];
+            }
+        }
+        
+        function calculateBounds(coordinates) {
+            if (!coordinates || coordinates.length === 0) return { minX: 0, minY: 0, maxX: 100, maxY: 100 };
+            
+            let minX = Infinity, minY = Infinity;
+            let maxX = -Infinity, maxY = -Infinity;
+            
+            // Flatten and process all coordinates
+            const processCoordinates = (coords) => {
+                if (!Array.isArray(coords)) return;
+                if (coords.length === 2 && typeof coords[0] === 'number' && typeof coords[1] === 'number') {
+                    // This is a single coordinate pair
+                    minX = Math.min(minX, coords[0]);
+                    minY = Math.min(minY, coords[1]);
+                    maxX = Math.max(maxX, coords[0]);
+                    maxY = Math.max(maxY, coords[1]);
+                } else {
+                    // Recurse into nested arrays
+                    coords.forEach(processCoordinates);
+                }
+            };
+            
+            processCoordinates(coordinates);
+            
+            if (minX === Infinity || minY === Infinity || maxX === -Infinity || maxY === -Infinity) {
+                return { minX: 0, minY: 0, maxX: 100, maxY: 100 };
+            }
+            
+            // Add padding as a percentage of the geometry size
+            const width = maxX - minX;
+            const height = maxY - minY;
+            const padding = Math.max(width, height) * 0.1;
+
+            return {
+                minX: minX - padding,
+                minY: minY - padding,
+                maxX: maxX + padding,
+                maxY: maxY + padding,
+                width: width + 2 * padding,
+                height: height + 2 * padding
+            };
+        }
+        
+        function createSVGPath(coordinates, bounds, geometryType) {
+            if (!coordinates || coordinates.length === 0) return '';
+            
+            // Calculate scale to fit the geometry in the viewport while maintaining aspect ratio
+            const viewportWidth = 900;  // Leave room for padding
+            const viewportHeight = 900;
+            const scale = Math.min(
+                viewportWidth / bounds.width,
+                viewportHeight / bounds.height
+            );
+            
+            // Calculate offset to center the geometry
+            const offsetX = (viewportWidth - bounds.width * scale) / 2 + 50;
+            const offsetY = (viewportHeight - bounds.height * scale) / 2 + 50;
+            
+            function scaleCoord(coord) {
+                if (!Array.isArray(coord) || coord.length !== 2) {
+                    console.error('Invalid coordinate:', coord);
+                    return [0, 0];
+                }
+                return [
+                    (coord[0] - bounds.minX) * scale + offsetX,
+                    (coord[1] - bounds.minY) * scale + offsetY
+                ];
+            }
+
+            function createPointPath(coord) {
+                const [x, y] = scaleCoord(coord);
+                // Scale point size based on the overall geometry scale
+                const pointSize = Math.max(3, Math.min(6, 6 / scale));
+                return `M ${x-pointSize},${y} a ${pointSize},${pointSize} 0 1,0 ${pointSize*2},0 a ${pointSize},${pointSize} 0 1,0 ${-pointSize*2},0`;
+            }
+
+            function createPath(coords, type = 'line') {
+                if (!Array.isArray(coords) || coords.length === 0) return '';
+                
+                // Handle points
+                if (type === 'point') {
+                    return coords.map(coord => createPointPath(coord)).join(' ');
+                }
+
+                const scaledCoords = coords.map(scaleCoord);
+                const pathData = `M ${scaledCoords[0][0]} ${scaledCoords[0][1]} ` +
+                               scaledCoords.slice(1).map(([x, y]) => `L ${x} ${y}`).join(' ');
+
+                // Only close the path for polygons
+                const shouldClose = type === 'polygon';
+                return pathData + (shouldClose ? ' Z' : '');
+            }
+
+            try {
+                if (geometryType === 'Point') {
+                    return createPointPath(coordinates[0]);
+                } else if (geometryType === 'MultiPoint') {
+                    return createPath(coordinates[0], 'point');
+                } else if (geometryType === 'LineString') {
+                    return createPath(coordinates[0], 'line');
+                } else if (geometryType === 'MultiLineString') {
+                    return coordinates.map(coords => createPath(coords, 'line')).join(' ');
+                } else if (geometryType === 'Polygon') {
+                    return coordinates.map(coords => createPath(coords, 'polygon')).join(' ');
+                } else if (geometryType === 'MultiPolygon') {
+                    return coordinates.map(polys => 
+                        polys.map(coords => createPath(coords, 'polygon')).join(' ')
+                    ).join(' ');
+                }
+                return '';
+            } catch (error) {
+                console.error('Error creating SVG path:', error);
+                return '';
+            }
+        }
+        
+        function centerGeometry(bounds) {
+            // Reset the transform since we're handling centering in the SVG path creation
+            scale = 1;
+            translateX = 0;
+            translateY = 0;
+            updateTransform();
+        }
+        
+        function resetView() {
+            scale = 1;
+            translateX = 0;
+            translateY = 0;
+            updateTransform();
+        }
+        
+        function updateTransform() {
+            const geometryGroup = document.getElementById('geometryGroup');
+            geometryGroup.setAttribute('transform', 
+                `translate(${translateX},${translateY}) scale(${scale})`);
+        }
+
+        function getGeometryStyle(type) {
+            switch (type) {
+                case 'Point':
+                case 'MultiPoint':
+                    return `fill="#007bff" stroke="none"`;
+                case 'LineString':
+                case 'MultiLineString':
+                    return `fill="none" stroke="#007bff" stroke-width="2"`;
+                case 'Polygon':
+                case 'MultiPolygon':
+                    return `fill="#007bff33" stroke="#007bff" stroke-width="2"`;
+                case 'GeometryCollection':
+                    return `fill="#007bff33" stroke="#007bff" stroke-width="2"`;
+                default:
+                    return `fill="none" stroke="#007bff" stroke-width="2"`;
+            }
+        }
+
+        // Add example WKT on page load
+        document.getElementById('wktInput').value = 'POLYGON((30 10, 40 40, 20 40, 10 20, 30 10))';
+        renderWKT();
+    </script>
+</body>
+</html>
