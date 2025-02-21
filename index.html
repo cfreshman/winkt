@@ -323,14 +323,24 @@ MIT License - https://opensource.org/licenses/MIT
             
             try {
                 const reader = new jsts.io.WKTReader();
-                const wktStrings = wktInput.split('\n').filter(s => s.trim());
+                
+                // Clean whitespace but preserve structure
+                const wktStrings = wktInput
+                    .split('\n')
+                    .map(line => line.trim())
+                    .join(' ')
+                    .replace(/\s+/g, ' ')
+                    .trim()
+                    .split(/(?<=\))\s*(?=[A-Z])/);  // Split between closing paren and next type
                 
                 // Process all WKT strings and collect their bounds
-                const allGeometries = wktStrings.map(wkt => {
-                    const geometry = reader.read(wkt.trim());
-                    const coordinates = extractCoordinates(geometry);
-                    return { geometry, coordinates, type: geometry.getGeometryType() };
-                });
+                const allGeometries = wktStrings
+                    .filter(wkt => wkt.trim())  // Remove any empty strings
+                    .map(wkt => {
+                        const geometry = reader.read(wkt.trim());
+                        const coordinates = extractCoordinates(geometry);
+                        return { geometry, coordinates, type: geometry.getGeometryType() };
+                    });
 
                 // Calculate combined bounds
                 const allCoordinates = allGeometries.map(g => g.coordinates).flat(1);
@@ -342,9 +352,22 @@ MIT License - https://opensource.org/licenses/MIT
                 );
 
                 // Add all paths with their styles
-                geometryGroup.innerHTML = allGeometries.map(({ type }, index) => `
-                    <path d="${paths[index]}" ${getGeometryStyle(type)}/>
-                `).join('');
+                geometryGroup.innerHTML = allGeometries.map(({ type, geometry }, index) => {
+                    if (type === 'GeometryCollection') {
+                        // For GeometryCollection, create paths for each sub-geometry with its own style
+                        const subPaths = [];
+                        for (let i = 0; i < geometry.getNumGeometries(); i++) {
+                            const subGeom = geometry.getGeometryN(i);
+                            const subType = subGeom.getGeometryType();
+                            const subCoords = extractCoordinates(subGeom);
+                            const subPath = createSVGPath(subCoords, bounds, subType);
+                            subPaths.push(`<path d="${subPath}" ${getGeometryStyle(subType)}/>`);
+                        }
+                        return subPaths.join('');
+                    } else {
+                        return `<path d="${paths[index]}" ${getGeometryStyle(type)}/>`;
+                    }
+                }).join('');
                 
                 // Center all geometries
                 centerGeometry(bounds);
@@ -517,6 +540,15 @@ MIT License - https://opensource.org/licenses/MIT
                     return coordinates.map(polys => 
                         polys.map(coords => createPath(coords, 'polygon')).join(' ')
                     ).join(' ');
+                } else if (geometryType === 'GeometryCollection') {
+                    // For GeometryCollection, we recursively process each geometry
+                    // coordinates[i] contains the coordinates for geometry i
+                    // We need to pass the type of each sub-geometry to render it correctly
+                    return coordinates.map((coords, i) => {
+                        const subGeom = geometry.getGeometryN(i);
+                        const subType = subGeom.getGeometryType();
+                        return createSVGPath([coords], bounds, subType);
+                    }).join(' ');
                 }
                 return '';
             } catch (error) {
